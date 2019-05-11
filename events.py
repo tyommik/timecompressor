@@ -10,7 +10,7 @@ video_output = r'summary.mp4'
 cap = cv2.VideoCapture(video_input)
 cap.set(2, 1500)
 
-writeVideo_flag = False
+writeVideo_flag = True
 
 class Event:
     def __init__(self, start):
@@ -116,12 +116,54 @@ def main(events):
         frame_index = -1
 
     video = VideoCapture(video_source=video_input, start_frame=0)
+    start_pos = 0
 
-    for event in events:
-        start_pos = event.start
+    for idx, event in enumerate(events):
+
         video.set_position(start_pos)
 
-        while video.get_position() <= event.stop:
+        gap_step = (event.start - start_pos) // (1 * 25)
+
+        total = 30
+        (rAvg, gAvg, bAvg, mAvg) = (None, None, None, None)
+        # проматываем на ускорении гап между событиями
+        # накладываем кадры друг на друга, чтобы было плавно
+        while start_pos < event.start - 3 * 25:
+            print(video.get_position())
+
+            frame = video.get_frame()
+            (B, G, R) = cv2.split(frame.astype("float"))
+            # if the frame averages are None, initialize them
+            if rAvg is None:
+                rAvg = R
+                bAvg = B
+                gAvg = G
+
+            # otherwise, compute the weighted average between the history of
+            # frames and the current frames
+            else:
+                rAvg = ((total * rAvg) + (1 * R)) / (total + 1.0)
+                gAvg = ((total * gAvg) + (1 * G)) / (total + 1.0)
+                bAvg = ((total * bAvg) + (1 * B)) / (total + 1.0)
+
+            # increment the total number of frames read thus far
+            # total += 1
+
+            avg = cv2.merge([bAvg, gAvg, rAvg]).astype("uint8")
+
+            start_pos += gap_step
+            video.set_position(start_pos)
+            cv2.imshow('heatmap', avg)
+
+            if writeVideo_flag:
+                # save a frame
+                out.write(frame)
+
+            k = cv2.waitKey(1) & 0xff
+            if k == 27:
+                break
+
+        while video.get_position() <= event.stop + 3 * 25:
             t1 = time.time()
 
             frame = video.get_frame()
@@ -134,8 +176,7 @@ def main(events):
                                   (255, 255, 255), 2)
                     # cv2.putText(frame, str(detection.obj_class_name), (int(detection.x), int(detection.y)), 0, 5e-3 * 200, (0, 255, 0), 2)
 
-            if video.width > 0 and video.height > 0:
-                cv2.imshow('heatmap', frame)
+            cv2.imshow('heatmap', frame)
 
             fps = (fps + (1. / (time.time() - t1))) / 2
             print("fps= %f" % (fps))
@@ -143,11 +184,12 @@ def main(events):
             if writeVideo_flag:
                 # save a frame
                 out.write(frame)
-                frame_index = frame_index + 1
 
             k = cv2.waitKey(30) & 0xff
             if k == 27:
                 break
+
+        start_pos = video.get_position() + 1
 
     # writer.close()
     cap.release()
