@@ -1,12 +1,12 @@
 from collections import namedtuple
-import time
-import numpy as np
+import sorting
 import cv2
+from itertools import combinations
 
 Detection = namedtuple('Detection', 'pos, x, y, w, h, obj_class, precision')
 
 video_input = r'timecompressor_archive.mp4'
-video_output = r'summary_3.mp4'
+video_output = r'summary_4.mp4'
 cap = cv2.VideoCapture(video_input)
 cap.set(2, 1500)
 
@@ -130,15 +130,19 @@ def main(events):
 
         stack = []
 
-        for _ in range(10):
+        for _ in range(3):
             stack.append(events.pop(0))
 
+        combs = combinations(stack, 2)
+
         stack = list(reversed(sorted(stack, key=lambda x: x.length)))
+        a_b = sorting.search_optimal(events[0], events[1])
+        a_c = sorting.search_optimal(events[0], events[2])
 
         shift = 3 * 25
-        videos = [VideoCapture(video_source=video_input, start_frame=event.start - shift) for event in stack]
+        videos = [VideoCapture(video_source=video_input, start_frame=event.start - shift - pause) for event, pause in zip(stack,(0, a_b, a_c))]
 
-        max_length = stack[0].length + 2 * shift
+        max_length = stack[0].length + 2 * shift + max(a_c, a_b)
 
         while max_length:
             frames = [video.get_frame() for video in videos]
