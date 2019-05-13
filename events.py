@@ -3,6 +3,7 @@ import sorting
 import cv2
 from itertools import combinations
 
+CONST_TIME = 539975
 Detection = namedtuple('Detection', 'pos, x, y, w, h, obj_class, precision')
 
 video_input = r'timecompressor_archive.mp4'
@@ -10,7 +11,7 @@ video_output = r'summary_4.mp4'
 cap = cv2.VideoCapture(video_input)
 cap.set(2, 1500)
 
-writeVideo_flag = True
+writeVideo_flag = False
 
 class Event:
     def __init__(self, start):
@@ -72,7 +73,7 @@ class VideoCapture:
                 print('No frame')
 
     def get_time(self):
-        f = self.get_position()
+        f = self.get_position() + CONST_TIME
         hours = int(f // 90000)
         minutes = int((f - hours * 90000) // 1500)
         secondes = int((f - hours * 90000 - minutes * 1500) // 25)
@@ -87,6 +88,7 @@ def read_file():
             if obj_class == '0':
                 detection = Detection(int(pos), int(x), int(y), int(w), int(h), int(obj_class), float(precision))
                 yield detection
+
 
 def collect_events():
     events = []
@@ -114,9 +116,23 @@ def collect_events():
     return events
 
 
-def main(events):
+def channel_generator(event_stack):
 
-    fps = 0.0
+    while event_stack:
+        event = event_stack.pop(0)
+        video = VideoCapture(video_source=video_input, start_frame=event.start - 2 * 25)
+
+        event_duration = event.stop - event.start
+
+        while event_duration + 2 * 25:
+            frame = video.get_frame()
+            timestamp = video.get_time()
+            event_duration -= 1
+            det = event.detections_map.get(video.get_position(), [])
+            yield (frame, det, timestamp, video.get_position())
+
+
+def main(events):
 
     if writeVideo_flag:
         # Define the codec and create VideoWriter object
@@ -126,63 +142,58 @@ def main(events):
         out = cv2.VideoWriter(video_output, fourcc, 25, (w, h))
 
 
+    channels_number = 3
+
     while events:
 
-        stack = []
+        background = None
+        gens = [channel_generator(events) for _ in range(channels_number)]
 
-        for _ in range(3):
-            stack.append(events.pop(0))
+        while True:
 
-        combs = combinations(stack, 2)
+            image_stack = []
+            # background = None
 
-        stack = list(reversed(sorted(stack, key=lambda x: x.length)))
-        a_b = sorting.search_optimal(events[0], events[1])
-        a_c = sorting.search_optimal(events[0], events[2])
+            for gen_idx, gen in enumerate(gens):
+                # frame, det, timestamp = next(gen)
 
-        shift = 3 * 25
-        videos = [VideoCapture(video_source=video_input, start_frame=event.start - shift - pause) for event, pause in zip(stack,(0, a_b, a_c))]
+                image_stack.append(next(gen))
 
-        max_length = stack[0].length + 2 * shift + max(a_c, a_b)
+            image_stack.sort(key=lambda x: x[3])
 
-        while max_length:
-            frames = [video.get_frame() for video in videos]
+            for gen_idx, (frame, det, timestamp, pos) in enumerate(image_stack):
+                if gen_idx == 0:
+                    background = frame
+                if frame is not None:
+                    if det:
+                        for detection in det:
+                            # cv2.rectangle(frame, (int(detection.x), int(detection.y)),
+                            #               (int(detection.x + detection.w), int(detection.y + detection.h)),
+                            #               (255, 255, 255), 2)
 
-            background = frames[0]
+                            x = detection.x
+                            y = detection.y
+                            w = detection.w
+                            h = detection.h
 
-            for idx, event in enumerate(stack, start=0):
-                detections = event.detections_map.get(videos[idx].get_position())
-                if detections:
-                    for detection in detections:
-                        # cv2.rectangle(background, (int(detection.x), int(detection.y)),
-                        #               (int(detection.x + detection.w), int(detection.y + detection.h)),
-                        #               (255, 255, 255), 2)
-
-                        x = detection.x
-                        y = detection.y
-                        w = detection.w
-                        h = detection.h
-                        background[y:y + h, x:x + w] = frames[idx][y:y + h, x:x + w]
-
-                    for detection in detections:
-                        cv2.putText(background, videos[idx].get_time(), (int(detection.x), int(detection.y)), 0,
-                                    5e-3 * 200, (0, 255, 0), 2)
+                            # TODO можно сортировать события по времени перед наложением
+                            # так чтобы самые новые события были поверх более старых
+                            # background[y:y + h, x:x + w] = frame[y:y + h, x:x + w]
+                            cv2.addWeighted(frame[y:y + h, x:x + w], 0.7, background[y:y + h, x:x + w], 0.3, 0, background[y:y + h, x:x + w])
 
 
-            # res_show = cv2.addWeighted(frames[0], 0.5, frames[1], 0.5, 2)
-            # res_show = cv2.addWeighted(res_show, 0.5, frames[2], 0.5, 2)
-
-            # frame = video.get_frame()
-            cv2.imshow('test', background)
-
-            max_length -= 1
+                        for detection in det:
+                            cv2.putText(background, timestamp, (int(detection.x), int(detection.y)), 0,
+                                        3e-3 * 200, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.imshow('gen', background)
 
             if writeVideo_flag:
-                # save a frame
                 out.write(background)
 
             k = cv2.waitKey(1) & 0xff
             if k == 27:
                 break
+
 
     # writer.close()
     cap.release()
