@@ -107,18 +107,18 @@ class VideoChannel:
 
 
 def main(events):
+    WIDTH, HIGHT = int(cap.get(3)), int(cap.get(4))
+
     if writeVideo_flag:
         # Define the codec and create VideoWriter object
-        w = int(cap.get(3))
-        h = int(cap.get(4))
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        out = cv2.VideoWriter(video_output, fourcc, 25, (w, h))
+        out = cv2.VideoWriter(video_output, fourcc, 25, (WIDTH, HIGHT))
 
-    channels_number = 3
+    channels_number = 4
+
+    counter = 0
 
     while events:
-
-        flag = True
 
         background = None
 
@@ -133,8 +133,18 @@ def main(events):
         working_channels_gens = [ch.step() for ch in working_channels]
         waiting_channels_gens = [ch.step() for ch in waiting_channels]
 
-        while flag:
+        while True:
 
+            if not working_channels:
+                working_channels.append(waiting_channels.pop(0))
+                working_channels_gens.append(waiting_channels_gens.pop(0))
+
+            while(len(waiting_channels) + len(working_channels) < channels_number):
+                new_ch = VideoChannel(events)
+                waiting_channels.append(new_ch)
+                waiting_channels_gens.append(new_ch.step())
+
+            # обязательно переключаем все каналы в работающие
             for w in working_channels:
                 w.run()
 
@@ -143,17 +153,15 @@ def main(events):
             list_of_changable_gens = []
 
             for gen_idx, gen in enumerate([ch for ch in working_channels_gens]):
-                # frame, det, timestamp = next(gen)
-
                 tp = next(gen)
                 if tp is Op.STOP:
                     # запомни индекс генератора, который бросил остановку
+                    print('Генератор прекратир работу')
                     list_of_changable_gens.append(gen_idx)
                 else:
                     image_stack.append(tp)
 
             # обработать list_of_changable_gens - список остановленных генераторов
-
             new_working_channels = []
             new_working_channels_gens = []
 
@@ -176,81 +184,102 @@ def main(events):
                 # отсортируем по времени
                 image_stack.sort(key=lambda x: x[3])
 
-                pass_or_not = False
+                active_detections = []
+                for image in image_stack:
+                    active_detections += image[1]
+
+                if waiting_channels:
+
+                    for _ in range(len(waiting_channels)):
+                        check_channel, check_channel_gen = waiting_channels.pop(
+                            0), waiting_channels_gens.pop(0)
+
+                        _, w_dets, *args = next(check_channel_gen)
+
+                        if w_dets:
+
+                            pass_or_not = True
+
+                            for w_det in w_dets:
+                                for active_detection in active_detections:
+                                    res = sorting.check_rectangels(w_det, active_detection)
+                                    if res <= 5:
+                                        pass_or_not *= True
+                                    else:
+                                        pass_or_not *= False
+
+                            if pass_or_not:
+
+                                print('Переключаем генератор из ждущего в работающий')
+
+                                working_channels.append(check_channel)
+                                working_channels_gens.append(check_channel_gen)
+                                break
+
+                            else:
+                                # waiting_channels.insert(0, check_channel)
+                                # waiting_channels_gens.insert(0, check_channel_gen)
+
+                                print('Событие не поместилось в кадр')
+                                waiting_channels.append(check_channel)
+                                waiting_channels_gens.append(check_channel_gen)
 
                 for gen_idx, (frame, det, timestamp, pos) in enumerate(image_stack):
+
                     if gen_idx == 0:
                         background = frame
-                    if frame is not None:
-                        if det:
-                            for detection in det:
-                                if waiting_channels:
-                                    check_channel, check_channel_gen = waiting_channels.pop(
-                                        0), waiting_channels_gens.pop(0)
+                    if det and frame is not None:
+                        for detection in det:
 
-                                    _, w_dets, *args = next(check_channel_gen)
+                            w = detection.w
+                            h = detection.h
 
-                                    for w_det in w_dets:
-                                        pass_or_not = True
+                            w_additive = int((0.8 * w) / 2)
+                            h_additive = int((0.2 * h) / 2)
 
-                                        res = sorting.check_rectangels(w_det, detection)
-                                        if res <= 20:
-                                            print('Площадь пересчения меньше 20%')
-                                            pass_or_not = True  # pass_or_not * True
-                                        else:
-                                            pass
-                                            # print('Площадь пересечения равна ', res)
+                            if detection.x - w_additive >= 0:
+                                x = detection.x - w_additive
+                            else:
+                                x = 0
 
-                                    if pass_or_not:
+                            if detection.x + w + w_additive <= WIDTH:
+                                w = w + w_additive
+                            else:
+                                w = WIDTH
 
-                                        print('Переключаем генератор из ждущего в работающий')
+                            if detection.y - h_additive >= 0:
+                                a = detection.y
+                                y = detection.y - h_additive
+                            else:
+                                y = 0
 
-                                        working_channels.append(check_channel)
-                                        working_channels_gens.append(check_channel_gen)
-                                        break
-                                    else:
-                                        waiting_channels.insert(0, check_channel)
-                                        waiting_channels_gens.insert(0, check_channel_gen)
+                            if detection.y + h + h_additive <= HIGHT:
+                                h = detection.y + h + h_additive
+                            else:
+                                h = HIGHT
 
-                                        # waiting_channels.append(check_channel)
-                                        # waiting_channels_gens.append(check_channel_gen)
+                            cv2.addWeighted(frame[y: y + h,
+                                            x: x + w], 0.7,
+                                            background[y: y + h,
+                                            x: x + w], 0.3, 0,
+                                            background[y: y + h,
+                                            x: x + w])
 
-                                # cv2.rectangle(frame, (int(detection.x), int(detection.y)),
-                                #               (int(detection.x + detection.w), int(detection.y + detection.h)),
-                                #               (255, 255, 255), 2)
+                        # for detection in det:
+                            cv2.rectangle(background, (int(x), int(y)),
+                                          (int(x + w), int(y + h)),
+                                          (242, 255, 229), 1)
 
-                                x = detection.x
-                                y = detection.y
-                                w = detection.w
-                                h = detection.h
+                            cv2.putText(background, timestamp, (
+                            int(x + 4), int(y + 12)), 0,
+                                        3e-3 * 120, (0,), 4)
+                            cv2.putText(background, timestamp, (
+                            int(x + 4), int(y + 12)), 0,
+                                        3e-3 * 120, (255, 255, 255), 1)
 
-                                multiplier = 0.0
-
-                                assert y - int(multiplier * h) > 0 or x - int(multiplier * w)
-
-                                cv2.addWeighted(frame[y - int(multiplier * h): y + h + int(multiplier * h),
-                                                x - int(multiplier * w): x + w + int(multiplier * w)], 0.7,
-                                                background[y - int(multiplier * h): y + h + int(multiplier * h),
-                                                x - int(multiplier * w): x + w + int(multiplier * w)], 0.3, 0,
-                                                background[y - int(multiplier * h): y + h + int(multiplier * h),
-                                                x - int(multiplier * w): x + w + int(multiplier * w)])
-
-                            for detection in det:
-                                multiplier = 0.0
-
-                                cv2.putText(background, timestamp, (
-                                int(detection.x - multiplier * detection.w), int(detection.y - multiplier * h)), 0,
-                                            3e-3 * 200, (0,), 4)
-                                cv2.putText(background, timestamp, (
-                                int(detection.x - multiplier * detection.w), int(detection.y - multiplier * h)), 0,
-                                            3e-3 * 200, (255, 255, 255), 1)
-
-                                # cv2.putText(background, timestamp, (int(detection.x), int(detection.y)), 0,
-                                #             3e-3 * 210, (0, 0, 0), 1, cv2.LINE_AA)
-                                # cv2.putText(background, timestamp, (int(detection.x), int(detection.y)), 0,
-                                #             3e-3 * 200, (0, 255, 0), 1, cv2.LINE_AA)
             cv2.imshow('gen', background)
 
+            counter += 1
             if writeVideo_flag:
                 out.write(background)
             k = cv2.waitKey(1) & 0xff

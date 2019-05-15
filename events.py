@@ -302,6 +302,10 @@ def main(events):
                             for detection in det:
                                 multiplier = 0.1
 
+                                    # cv2.rectangle(frame, (int(detection.x), int(detection.y)),
+                                    #               (int(detection.x + detection.w), int(detection.y + detection.h)),
+                                    #               (255, 255, 255), 2)
+
                                 cv2.putText(background, timestamp, (int(detection.x - multiplier * detection.w), int(detection.y - multiplier * h + 16)), 0, 3e-3 * 200, (0,), 4)
                                 cv2.putText(background, timestamp, (int(detection.x - multiplier * detection.w), int(detection.y - multiplier * h + 16)), 0, 3e-3 * 200, (255, 255, 255), 1)
 
