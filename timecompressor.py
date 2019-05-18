@@ -8,11 +8,13 @@ from enum import Enum, auto
 from events import Event
 from video_processing import VideoCapture, channel_generator
 
-CONST_TIME = 539975
+CONST_TIME = 1633750
+MAX_OVERLAPPING_AREA_RESTRICTION = 5  # in percents
+
 Detection = namedtuple('Detection', 'pos, x, y, w, h, obj_class, precision')
 
-video_input = r'/home/ashibaev/Downloads/timecompressor_archive.mp4'
-video_output = r'summary_7.mp4'
+video_input = r'/home/ashibaev/Downloads/Door_accross.mp4'
+video_output = r'summary_8.mp4'
 cap = cv2.VideoCapture(video_input)
 cap.set(2, 1500)
 
@@ -20,7 +22,7 @@ writeVideo_flag = True
 
 
 def read_file():
-    with open("detection.txt") as inf:
+    with open("door.txt") as inf:
         for line in iter(inf):
             line = line.strip()
             pos, x, y, w, h, obj_class, precision = line.split(' ')
@@ -52,6 +54,10 @@ def collect_events():
     for event in events:
         for det in event.detections:
             event.detections_map.setdefault(det.pos, []).append(det)
+
+    # counter = 0
+    # for event in events:
+    #     counter += event.length
     return events
 
 
@@ -80,7 +86,6 @@ class VideoChannel:
         while self._stack:
             event = self._stack.pop(0)
 
-            # video = VideoCapture(video_source=video_input, start_frame=event.start - 2 * 25)
             video = VideoCapture(video_source=video_input, start_frame=event.start, shift_time=CONST_TIME)
 
             event_duration = event.stop - event.start
@@ -114,13 +119,15 @@ def main(events):
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(video_output, fourcc, 25, (WIDTH, HIGHT))
 
-    channels_number = 4
+    channels_number = 5
 
     counter = 0
+    total = 400
 
     while events:
 
         background = None
+        (rAvg, gAvg, bAvg) = (None, None, None)
 
         working_channels = []
         waiting_channels = [VideoChannel(events) for _ in range(channels_number)]
@@ -181,7 +188,7 @@ def main(events):
             working_channels_gens[:] = new_working_channels_gens
 
             if image_stack:
-                # отсортируем по времени
+                # sort it by timestamp (from old to new)
                 image_stack.sort(key=lambda x: x[3])
 
                 active_detections = []
@@ -202,39 +209,54 @@ def main(events):
 
                             for w_det in w_dets:
                                 for active_detection in active_detections:
-                                    res = sorting.check_rectangels(w_det, active_detection)
-                                    if res <= 5:
+                                    overlapping = sorting.check_rectangels(w_det, active_detection)
+
+                                    if overlapping <= MAX_OVERLAPPING_AREA_RESTRICTION:
                                         pass_or_not *= True
                                     else:
                                         pass_or_not *= False
 
+                            # Move the generator from waiting list to working list
                             if pass_or_not:
-
-                                print('Переключаем генератор из ждущего в работающий')
-
                                 working_channels.append(check_channel)
                                 working_channels_gens.append(check_channel_gen)
                                 break
 
+                            # Or take it back to waiting list
                             else:
-                                # waiting_channels.insert(0, check_channel)
-                                # waiting_channels_gens.insert(0, check_channel_gen)
+                                waiting_channels.insert(0, check_channel)
+                                waiting_channels_gens.insert(0, check_channel_gen)
 
-                                print('Событие не поместилось в кадр')
-                                waiting_channels.append(check_channel)
-                                waiting_channels_gens.append(check_channel_gen)
+                                # waiting_channels.append(check_channel)
+                                # waiting_channels_gens.append(check_channel_gen)
 
                 for gen_idx, (frame, det, timestamp, pos) in enumerate(image_stack):
 
                     if gen_idx == 0:
                         background = frame
+
+                        # Smoothing background
+                        (B, G, R) = cv2.split(image_stack[0][0].astype("float"))
+                        if rAvg is None:
+                            rAvg = R
+                            bAvg = B
+                            gAvg = G
+                        else:
+                            rAvg = ((total * rAvg) + (1 * R)) / (total + 1.0)
+                            gAvg = ((total * gAvg) + (1 * G)) / (total + 1.0)
+                            bAvg = ((total * bAvg) + (1 * B)) / (total + 1.0)
+
+                        background = cv2.merge([bAvg, gAvg, rAvg]).astype("uint8")
+
+                        # Smoothing end
+
                     if det and frame is not None:
                         for detection in det:
 
                             w = detection.w
                             h = detection.h
 
-                            w_additive = int((0.8 * w) / 2)
+                            w_additive = int((0.4 * w) / 2)
                             h_additive = int((0.2 * h) / 2)
 
                             if detection.x - w_additive >= 0:
@@ -248,13 +270,12 @@ def main(events):
                                 w = WIDTH
 
                             if detection.y - h_additive >= 0:
-                                a = detection.y
                                 y = detection.y - h_additive
                             else:
                                 y = 0
 
                             if detection.y + h + h_additive <= HIGHT:
-                                h = detection.y + h + h_additive
+                                h = h + h_additive
                             else:
                                 h = HIGHT
 
